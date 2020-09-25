@@ -1,0 +1,135 @@
+  ##UNZIPPING FILES BEFORE IMPORTING TO ARTIFACT
+  gunzip -q filename.fastq.gz
+  
+  ##Importing to QIIME and changing fastq files to artifact
+  qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifest.txt \
+  --output-path manifest.qza \
+  --input-format PairedEndFastqManifestPhred33V2
+  
+  ##Generate summary of demultiplexed results
+  qiime demux summarize \ 
+  --i-data manifest.qza \ 
+  --o-visualization demux.qzv
+  
+  ##View demultiplexed results
+  qiime tools view demux.qzv
+  
+  ##Quality Control using DADA2
+  ##p-trim-left & p-trunc-len from where the quality drops off from the demux.qzv plots
+  qiime dada2 denoise-single \
+--i-demultiplexed-seqs demux.qza \
+--p-trim-left 0 \
+--p-trunc-len 000 \
+--o-representative-sequences rep-seqs-dada2.qza \ 
+--o-table table-dada2.qza \
+--o-denoising-stats stats-dada2.qza
+
+qiime metadata tabulate \ 
+--m-input-file stats-dada2.qza \ 
+--o-visualization stats-dada2.qzv
+
+##Taxonomic classification
+qiime feature-classifier classify-sklearn \ 
+--i-classifier silva-132-99-nb-classifier \ 
+--i-reads rep-seqs.qza \
+--o-classification taxonomy.qza 
+
+##FILTERING OUT SPECIFIC TAXONOMIC COMPONENTS
+qiime taxa filter-table \
+--i-table table-dada2.qza \
+--i-taxonomy taxonomy.qza \
+--p-exclude chloroplast,mitochondria \
+--o-filtered-table table-no-chloroplast-nomitochondria.qza
+##Filter out control samples (i.e. mock, water, etc.)
+qiime feature-table filter-samples
+--i-table table-no-chloroplast-nomitochondria.qza
+--m-metadata-file manifest.txt
+--p-exclude-ids
+--p-where "[sampleID] IN ('MOCK','WATER','etc')"
+-o-filtered-table table-no-chloroplast-nomitochondria.qza
+qiime feature-table summarize \
+--i-table table-no-chloroplast-nomitochondria.qza \
+--o-visualization table-no-chloroplast-nomitochondria.qzv \
+qiime tools view table-no-chloroplast-nomitochondria.qzv
+#Rarefy in QIIME2
+#sampling depth obtained from minimum sequence data to not lose samples from table-no-chloroplast-nomitochondria.qzv
+qiime feature-table rarefy \
+  --i-table table-no-chloroplast-nomitochondria.qza \
+  --p-sampling-depth 10000 \
+  --o-rarefied-table 16S-table-noplant-rarefied-10000.qza
+#Filter rep-seqs
+qiime feature-table filter-seqs \
+  --i-data rep-seqs-dada2.qza \
+  --i-table 16S-table-noplant-rarefied-10000_filtered.qza \
+  --o-filtered-data 16S-rep-seqs-filtered.qza
+qiime feature-table summarize \
+  --i-table 16S-table-noplant-rarefied-10000_filtered.qza \
+  --o-visualization 16S-table-noplant-rarefied-10000_filtered.qzv \
+  --m-sample-metadata-file manifest.txt
+qiime feature-table tabulate-seqs \ 
+--i-data 16s-rep-seqs-filtered.qza \ 
+--o-visualization filtered-rep-seqs.qzv
+
+##Generate a tree for phylogenetic diversity analyses 
+qiime phylogeny align-to-tree-mafft-fasttree \ 
+--i-sequences 16s-rep-seqs.qza \
+--o-alignment aligned-rep-seqs-filtered.qza \ 
+--o-masked-alignment masked-aligned-rep-seqs.qza \ 
+--o-tree unrooted-tree.qza \
+--o-rooted-tree rooted-tree.qza
+#Sampling depth obtained by choosing the max number of sequences that you will not eliminate many of your sequences in table-no-chloroplast-nomitochondria.qzv
+qiime diversity core-metrics-phylogenetic \ 
+--i-phylogeny rooted-tree.qza \
+--i-table table.qza \
+--p-sampling-depth 1103 \ 
+--m-metadata-file sample-metadata.tsv \ 
+--output-dir core-metrics-results
+
+##Determining alpha diversity 
+qiime diversity alpha-group-significance \
+--i-alpha-diversity core-metrics-results/faith_pd_vector.qza \ 
+--m-metadata-file manifest.txt \
+--o-visualization core-metrics-results/faith-pd-group-significance.qzv
+qiime diversity alpha-group-significance \
+--i-alpha-diversity core-metrics-results/evenness_vector.qza \ 
+--m-metadata-file sample-metadata.tsv \
+--o-visualization core-metrics-results/evenness-group-significance.qzv
+
+##determining beta diversity 
+qiime diversity beta-group-significance \
+--i-distance-matrix core-metrics-results/unweighted_unifrac_distance_matrix.qza \ 
+--m-metadata-file manifest.txt \
+--m-metadata-column categoricaldata \
+--o-visualization core-metrics-results/unweighted-unifrac-body-site-significance.qzv \ 
+--p-pairwise
+
+##Alpha rarefaction plottting
+#max depth determined around the median for the feature frequency from table-no-chloroplast-nomitochondria.qzv
+qiime diversity alpha-rarefaction \ 
+--i-table table-nochloroplast-nomitochondria.qza \
+--i-phylogeny rooted-tree.qza \ 
+--p-max-depth 4000 \
+--m-metadata-file sample-metadata.tsv \ 
+--o-visualization alpha-rarefaction.qzv
+
+##Redo Taxonomic classification with updated sequences
+qiime feature-classifier classify-sklearn \ 
+--i-classifier silva-132-99-nb-classifier \ 
+--i-reads 16s-rep-seqs-filtered.qza \
+--o-classification filtered-taxonomy.qza
+qiime metadata tabulate \ 
+--m-input-file filtered-taxonomy.qza \ 
+--o-visualization filtered-taxonomy.qzv
+qiime taxa barplot \
+--i-table table.qza \
+--i-taxonomy filtered-taxonomy.qza \ 
+--m-metadata-file manifest.txt \ 
+--o-visualization taxa-bar-plots.qzv
+
+##CONVERTING FILTERED TABLE INTO READABLE TXT DOC IN EXCEL
+  biom convert -i feature-table.biom -o feature-table.tsv --to-tsv
+
+
+  
